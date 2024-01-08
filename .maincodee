@@ -1,0 +1,150 @@
+import cv2
+import numpy as np
+
+# Function to calculate accumulated average for background subtraction
+def calc_accum_avg(image, accumulated_weight, accumulated_background):
+    if accumulated_weight is None:
+        accumulated_weight = 0.5
+
+    # Initialize the background image
+    if accumulated_background is None:
+        accumulated_background = image.copy().astype("float")
+
+    # Update the accumulated weight
+    cv2.accumulateWeighted(image, accumulated_background, accumulated_weight)
+
+    return accumulated_background
+
+# Function to segment face region
+def segment(image):
+    # Threshold the image to obtain a binary image
+    _, thresholded = cv2.threshold(image, 25, 255, cv2.THRESH_BINARY)
+
+    # Find contours in the thresholded image
+    contours, _ = cv2.findContours(thresholded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Check if any contours are found
+    if contours:
+        # Select the largest contour
+        face_segment = max(contours, key=cv2.contourArea)
+        return thresholded, face_segment
+    else:
+        return None
+
+# Function to count faces
+def count_fingers(thresholded, face_segment):
+    # Find contours in the thresholded image
+    contours, _ = cv2.findContours(thresholded, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+    # Check if contours are found
+    if contours:
+        # Find the contour with the maximum area
+        max_contour = max(contours, key=cv2.contourArea)
+
+        # Calculate convex hull of the face contour
+        hull = cv2.convexHull(max_contour, returnPoints=False)
+
+        # Calculate defects in the convex hull
+        defects = cv2.convexityDefects(max_contour, hull)
+
+        # Initialize face count
+        face_count = 0
+
+        # Check if defects are found
+        if defects is not None:
+            for i in range(defects.shape[0]):
+                s, e, _, _ = defects[i, 0]
+                start = tuple(max_contour[s][0])
+                end = tuple(max_contour[e][0])
+
+                # Use distance between start and end points to filter out small defects
+                distance = np.sqrt((end[0] - start[0]) ** 2 + (end[1] - start[1]) ** 2)
+
+                if distance > 20:
+                    face_count += 1
+
+        return face_count
+
+    return 0
+
+# Open the camera
+cam = cv2.VideoCapture(0)
+
+# Initialize a frame count
+num_frames = 0
+
+# Define ROI coordinates
+roi_top, roi_bottom, roi_left, roi_right = 100, 300, 100, 300
+
+# Set accumulated weight for background averaging
+accumulated_weight = 0.5
+
+# Initialize accumulated background to None
+accumulated_background = None
+
+# Keep looping until interrupted
+while True:
+    # Get the current frame
+    ret, frame = cam.read()
+
+    # Flip the frame so that it is not the mirror view
+    frame = cv2.flip(frame, 1)
+
+    # Clone the frame
+    frame_copy = frame.copy()
+
+    # Grab the ROI from the frame
+    roi = frame[roi_top:roi_bottom, roi_left:roi_right]
+
+    # Apply grayscale and blur to ROI
+    gray = cv2.cvtColor(roi, cv2.COLOR_BGR2GRAY)
+    gray = cv2.GaussianBlur(gray, (7, 7), 0)
+
+    # For the first 30 frames, calculate the average of the background
+    if num_frames < 60:
+        accumulated_background = calc_accum_avg(gray, accumulated_weight, accumulated_background)
+        if num_frames <= 59:
+            cv2.putText(frame_copy, "WAIT! GETTING BACKGROUND AVG.", (200, 400), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+            cv2.imshow("Face Count", frame_copy)
+    else:
+        # Now that we have the background, we can segment the face.
+
+        # Segment the face region
+        face = segment(gray)
+
+        # First check if we were able to actually detect a face
+        if face is not None:
+
+            # Unpack
+            thresholded, face_segment = face
+
+            # Draw contours around face segment
+            cv2.drawContours(frame_copy, [face_segment + (roi_right, roi_top)], -1, (255, 0, 0), 1)
+
+            # Count the fingers
+            fingers = count_fingers(thresholded, face_segment)
+
+            # Display count
+            cv2.putText(frame_copy, str(fingers), (70, 45), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
+
+            # Also display the thresholded image
+            cv2.imshow("Thesholded", thresholded)
+
+    # Draw ROI Rectangle on frame copy
+    cv2.rectangle(frame_copy, (roi_left, roi_top), (roi_right, roi_bottom), (0, 0, 255), 5)
+
+    # Increment the number of frames for tracking
+    num_frames += 1
+
+    # Display the frame with segmented face
+    cv2.imshow("Face Count", frame_copy)
+
+    # Close windows with Esc
+    k = cv2.waitKey(1) & 0xFF
+
+    if k == 27:
+        break
+
+# Release the camera and destroy all the windows
+cam.release()
+cv2.destroyAllWindows()
